@@ -21,49 +21,73 @@ def kmp_next_state(state, char, evil, fail):
         state += 1
     return state  # if state == m, evil is fully matched → invalid
 
+from concurrent.futures import ThreadPoolExecutor
+from itertools import product
 
 class Solution:
     def findGoodStrings(self, n: int, s1: str, s2: str, evil: str) -> int:
         MOD = 10**9 + 7
         m = len(evil)
-
-        # precompute KMP failure function
         fail = build_kmp_failure(evil)
 
-        @lru_cache(maxsize=None)
-        def dp(pos, kmp_state, tight_lo, tight_hi):
-            """
-            pos        : current position in string being built
-            kmp_state  : chars of evil matched so far
-            tight_lo   : still bounded below by s1
-            tight_hi   : still bounded above by s2
-            """
-            if kmp_state == m:  # evil substring found — invalid
-                return 0
-            if pos == n:        # built full string — valid
-                return 1
+        # dp_table[pos][kmp_state][tight_lo][tight_hi]
+        # Build iteratively position by position
+        # State: (kmp_state, tight_lo, tight_hi) → count
+        from collections import defaultdict
 
-            # character range at this position
+        # current layer: maps state → count
+        current = defaultdict(int)
+        current[(0, True, True)] = 1  # start state
+
+        WORKERS = 4
+
+        def process_state(args):
+            """Expand one state at current position."""
+            state, count, pos = args
+            kmp_state, tight_lo, tight_hi = state
+
+            if kmp_state == m or count == 0:
+                return []
+
             lo = s1[pos] if tight_lo else 'a'
             hi = s2[pos] if tight_hi else 'z'
 
-            count = 0
+            results = []
             for c in map(chr, range(ord(lo), ord(hi) + 1)):
                 next_kmp = kmp_next_state(kmp_state, c, evil, fail)
-                if next_kmp == m:   # this char completes evil — skip
+                if next_kmp == m:
                     continue
-                count += dp(
-                    pos + 1,
+                next_state = (
                     next_kmp,
                     tight_lo and (c == lo),
                     tight_hi and (c == hi)
                 )
+                results.append((next_state, count))
+            return results
 
-            return count % MOD
+        for pos in range(n):
+            # prepare tasks — all current states are independent
+            tasks = [
+                (state, count, pos)
+                for state, count in current.items()
+            ]
 
-        result = dp(0, 0, True, True)
-        dp.cache_clear()
-        return result
+            # parallel expansion of all states at this position
+            with ThreadPoolExecutor(max_workers=WORKERS) as ex:
+                all_results = list(ex.map(process_state, tasks))
+
+            # merge results — serial reduction (fast, just addition)
+            next_layer = defaultdict(int)
+            for results in all_results:
+                for next_state, count in results:
+                    next_layer[next_state] = (
+                        next_layer[next_state] + count
+                    ) % MOD
+
+            current = next_layer
+
+        # sum all valid final states (kmp_state != m already filtered)
+        return sum(current.values()) % MOD
 
 # Synced seamlessly with LeetHub Pro
 # Pro features: https://bit.ly/leethubpro | Free version: https://bit.ly/leethubv4
